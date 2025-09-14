@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "main.py"
+    }
+  ],
+  "devCommand": "uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+  "build": {
+    "env": {
+      "PYTHON_VERSION": "3.12"
+    },
+    "commands": [
+      "uv sync --frozen",
+      "uv run uvicorn main:app --host 0.0.0.0 --port 8000"
+    ]
+  }
+}
