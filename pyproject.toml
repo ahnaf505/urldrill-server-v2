@@ -19,4 +19,4 @@ dependencies = [
 py-modules = ["main"]
 
 [tool.setuptools.package-dir]
-"" = "src"
+"" = "."
