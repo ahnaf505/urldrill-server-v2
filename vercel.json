@@ -1,19 +1,10 @@
 {
-  "version": 2,
-  "builds": [
+  "buildCommand": "python3 -m pip install uv && python3 -m uv pip install . --target /build",
+  "outputDirectory": "public",
+  "rewrites": [
     {
-      "src": "main.py",
-      "use": "@vercel/python"
+      "source": "/(.*)",
+      "destination": "/api/main"
     }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "main.py"
-    }
-  ],
-  "devCommand": "uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
-  "env": {
-    "PYTHON_VERSION": "3.12"
-  }
+  ]
 }
