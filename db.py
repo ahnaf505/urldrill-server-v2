@@ -7,9 +7,13 @@ from decimal import Decimal
 import hashlib
 from datetime import datetime, timezone, timedelta
 from psycopg2.extras import execute_values
+import os
+from dotenv import load_dotenv
 
 # Connection string (replace with yours as needed)
-DB_URL = "postgresql://urldrillserver:ServerAccess12231!@127.0.0.1:5432/postgres"
+load_dotenv()
+
+DB_URL = os.getenv("DB_URL")
 
 def get_connection():
     conn = psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
