@@ -15,8 +15,7 @@ dependencies = [
     "websockets>=15.0.1",
     "python-dotenv>=1.1.1",
 ]
-[tool.setuptools]
-py-modules = ["main"]
 
-[tool.setuptools.package-dir]
-"" = "."
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta:__legacy__"
