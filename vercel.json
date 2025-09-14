@@ -1,10 +1,15 @@
 {
   "buildCommand": "python3 -m pip install uv && python3 -m uv pip install . --target /build",
-  "outputDirectory": "public",
-  "rewrites": [
+  "builds": [
     {
-      "source": "/(.*)",
-      "destination": "/api/main"
+      "src": "main.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "main.py"
     }
   ],
   "outputDirectory": "."
