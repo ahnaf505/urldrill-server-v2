@@ -1,5 +1,5 @@
 {
-  "buildCommand": "python3 -m pip install uv && python3 -m uv pip install . --target /build",
+  "buildCommand": "python3 -m pip install uv && python3 -m uv pip install . --target /build && uv sync",
   "builds": [
     {
       "src": "main.py",
