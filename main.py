@@ -24,6 +24,7 @@ import time
 import os
 from auth import *
 from generator import *
+import asyncio
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -98,7 +99,8 @@ async def dashboard(request: Request):
     key3 = request.cookies.get("keythree")
 
     if integrity_check(request.cookies):
-        if check_session(key1, key2, key3):
+        session_valid = await asyncio.to_thread(check_session, key1, key2, key3)
+        if session_valid:
             return templates.TemplateResponse("index.html", {"request": request})
         else:
             return templates.TemplateResponse("login.html", {"request": request})
@@ -107,20 +109,23 @@ async def dashboard(request: Request):
 
 @app.post("/", response_class=JSONResponse)
 async def dashboard_data(request: Request, auth: tuple = Depends(authorize_api)):
-    a = getstats()
-    workers = db_read_all_workers()
-    w = process_workers(workers)
-    worker_hold_state = {"hold_worker": read_hold_worker()}
-    queue_hold_state = {"hold_queue": read_hold_queue()}
-    batch_delay = {"batch_delay": read_delay()}
+    # Run blocking DB and processing calls in thread pool
+    stats = await asyncio.to_thread(getstats)
+    workers = await asyncio.to_thread(db_read_all_workers)
+    processed_workers = await asyncio.to_thread(process_workers, workers)
+    hold_worker = await asyncio.to_thread(read_hold_worker)
+    hold_queue = await asyncio.to_thread(read_hold_queue)
+    batch_delay = await asyncio.to_thread(read_delay)
+
     data = {
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        **a,
-        **w,
-        **worker_hold_state,
-        **queue_hold_state,
-        **batch_delay
+        **stats,
+        **processed_workers,
+        "hold_worker": hold_worker,
+        "hold_queue": hold_queue,
+        "batch_delay": batch_delay
     }
+
     return JSONResponse(data)
 
 
@@ -259,7 +264,7 @@ async def logout(request: Request):
 # Worker Management
 @app.get("/register")
 async def register_worker():
-    worker_id, api_key = db_create_worker()
+    worker_id, api_key = await asyncio.to_thread(db_create_worker)
     
     if worker_id:
         return {
@@ -273,7 +278,6 @@ async def register_worker():
 
 @app.post("/heartbeat")
 async def heartbeat(request: Request):
-    # Try to manually run the dependency
     try:
         worker_id = await get_worker_auth(
             worker_id=request.headers.get("X-Worker-ID"),
@@ -287,20 +291,34 @@ async def heartbeat(request: Request):
     ram = payload["ram_usage"]
 
     disk_name = payload["disk_usage"]["name"]
-    disk_usage = payload["disk_usage"]["usage_percent"]
+    disk_usage = payload["disk_usage"]["percent"]
 
     net_in = payload["network"]["in"]
     net_out = payload["network"]["out"]
     public_ip = payload["public_ip"]
 
-    if db_worker_restart(worker_id):
+    # Run blocking DB calls in thread pool
+    worker_restart = await asyncio.to_thread(db_worker_restart, worker_id)
+    hold_worker = await asyncio.to_thread(read_hold_worker)
+
+    if worker_restart:
         status = "restart"
-    elif read_hold_worker():
+    elif hold_worker:
         status = "hold"
     else:
         status = "continue"
 
-    db_heartbeat_worker(worker_id, cpu, ram, disk_name, disk_usage, net_in, net_out, public_ip)
+    await asyncio.to_thread(
+        db_heartbeat_worker,
+        worker_id,
+        cpu,
+        ram,
+        disk_name,
+        disk_usage,
+        net_in,
+        net_out,
+        public_ip
+    )
 
     return {"status": status, "message": "Heartbeat updated", "worker_id": worker_id}
 
@@ -313,26 +331,28 @@ async def get_tasks(request: Request):
         )
     except HTTPException:
         return {"status": "restart", "message": "Worker auth failed"}
-    if read_hold_queue() == True:
-        return {
-            "bitly": [],
-            "sid": [],
-            "shorturl": []
-        }
-    delay = read_delay()
-    if delay != None:
+
+    # Run blocking calls in thread pool
+    hold_queue = await asyncio.to_thread(read_hold_queue)
+    if hold_queue:
+        return []
+
+    delay = await asyncio.to_thread(read_delay)
+    if delay is not None:
         await asyncio.sleep(delay)
 
-    generated_uid = {
-        "bitly": generate_bitly(),
-        "sid": generate_sid(),
-        "shorturl": generate_shorturl()
-    }
-    batch_insert_bitly(generated_uid["bitly"], worker_id)
-    batch_insert_sid(generated_uid["sid"], worker_id)
-    batch_insert_shorturl(generated_uid["shorturl"], worker_id)
-    count = count_total_items(generated_uid)
-    db_add_to_queue_count(worker_id, count)
+    backlog = await asyncio.to_thread(unresolved_retrieve)
+    if backlog is not None:
+        return backlog
+
+    # These are your synchronous generators
+    generated_uid = generate_bitly() + generate_sid() + generate_shorturl()
+
+    # Insert into queue and update DB asynchronously
+    await asyncio.to_thread(batch_insert_queue, generated_uid, worker_id)
+    count = await asyncio.to_thread(count_total_items, generated_uid)
+    await asyncio.to_thread(db_add_to_queue_count, worker_id, count)
+
     return generated_uid
 
 @app.post("/result")
@@ -343,9 +363,8 @@ async def submit_result(
     resolved_url: Optional[str] = Form(None),
     title: Optional[str] = Form(None),
     short_description: Optional[str] = Form(None),
-    full_text_blob: Optional[str] = Form(None),
-    scraped_at: Optional[str] = Form(None)
-    ):
+    full_text_blob: Optional[str] = Form(None)
+):
     try:
         worker_id = await get_worker_auth(
             worker_id=request.headers.get("X-Worker-ID"),
@@ -353,15 +372,16 @@ async def submit_result(
         )
     except HTTPException:
         return {"status": "restart", "message": "Worker auth failed"}
-    db_subtract_from_queue_count(worker_id, 1)
-    if 's.id' in unresolved_url:
-        delete_sid_task('/'.join(unresolved_url.split('/')[3:]))
-    elif 'bit.ly' in unresolved_url:
-        delete_bitly_task('/'.join(unresolved_url.split('/')[3:]))
-    elif 'shorturl.at' in unresolved_url:
-        delete_shorturl_task('/'.join(unresolved_url.split('/')[3:]))
+
+    # Run blocking functions in thread pool
+    await asyncio.to_thread(db_subtract_from_queue_count, worker_id, 1)
 
     if status == "success":
+        try:
+            await asyncio.to_thread(delete_task, unresolved_url)
+        except:
+            pass
+
         missing_fields = []
         if not resolved_url:
             missing_fields.append("resolved_url")
@@ -371,47 +391,37 @@ async def submit_result(
             missing_fields.append("short_description")
         if not full_text_blob:
             missing_fields.append("full_text_blob")
-        if not scraped_at:
-            missing_fields.append("scraped_at")
-        
+
         if missing_fields:
             raise HTTPException(
                 status_code=400,
                 detail=f"Missing required fields for success status: {', '.join(missing_fields)}"
             )
 
-        db_successful_result(worker_id,
+        await asyncio.to_thread(
+            db_successful_result,
+            worker_id,
             unresolved_url,
             resolved_url,
             title,
             short_description,
-            full_text_blob)
-        
-        return {
-            "status": "success",
-            "message": "Result processed successfully",
-        }
-    
-    
+            full_text_blob
+        )
+
+        return {"status": "success", "message": "Result processed successfully"}
+
     elif status == "noredirect":
-        db_noredirect_result(worker_id, unresolved_url)
-        if 's.id' in unresolved_url:
-            batch_insert_sid(['/'.join(unresolved_url.split('/')[3:])])
-        elif 'bit.ly' in unresolved_url:
-            batch_insert_bitly(['/'.join(unresolved_url.split('/')[3:])])
-        elif 'shorturl.at' in unresolved_url:
-            batch_insert_shorturl(['/'.join(unresolved_url.split('/')[3:])])
-    
-        return {
-            "status": "success",
-            "message": "Result processed successfully",
-        }
+        await asyncio.to_thread(db_noredirect_result, worker_id, unresolved_url)
+        return {"status": "success", "message": "Result processed successfully"}
+
     elif status == "notfound":
-        db_notfound_result()
-        return {
-            "status": "success",
-            "message": "Result processed successfully",
-        }
+        try:
+            await asyncio.to_thread(delete_task, unresolved_url)
+        except:
+            pass
+        await asyncio.to_thread(db_notfound_result)
+        return {"status": "success", "message": "Result processed successfully"}
+
     else:
         raise HTTPException(
             status_code=400,

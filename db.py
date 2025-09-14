@@ -585,11 +585,11 @@ def is_logged_in_logic(keys: tuple[str, str, str]) -> bool:
 
 
 # Handling unresolved task
-def batch_insert_bitly(urls, worker_id=None):
+def batch_insert_queue(urls, worker_id=None):
     if not urls:
         return
     query = """
-        INSERT INTO bitly_queue (worker_id, unresolved_url, assigned_at)
+        INSERT INTO big_queue (worker_id, unresolved_url, assigned_at)
         VALUES %s
     """
     
@@ -600,43 +600,12 @@ def batch_insert_bitly(urls, worker_id=None):
         with conn.cursor() as cur:
             execute_values(cur, query, values)
 
-def batch_insert_sid(urls, worker_id=None):
-    if not urls:
-        return
-    query = """
-        INSERT INTO sid_queue (worker_id, unresolved_url, assigned_at)
-        VALUES %s
-    """
-    
-    assigned_at = datetime.utcnow() if worker_id else None
-    values = [(worker_id, url, assigned_at) for url in urls]
-
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            execute_values(cur, query, values)
-
-def batch_insert_shorturl(urls, worker_id=None):
-    if not urls:
-        return
-    query = """
-        INSERT INTO shorturl_queue (worker_id, unresolved_url, assigned_at)
-        VALUES %s
-    """
-
-    assigned_at = datetime.utcnow() if worker_id else None
-    values = [(worker_id, url, assigned_at) for url in urls]
-
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            execute_values(cur, query, values)
-
-
-def unresolved_bitly_retrieve():
+def unresolved_retrieve():
     three_hours_ago = datetime.utcnow() - timedelta(hours=1)
 
     query = """
         SELECT unresolved_url
-        FROM bitly_queue
+        FROM big_queue
         WHERE assigned_at < %s
         ORDER BY random()
         LIMIT 33;
@@ -650,47 +619,9 @@ def unresolved_bitly_retrieve():
                 return None
             return [row['unresolved_url'] for row in rows]
 
-def unresolved_sid_retrieve():
-    three_hours_ago = datetime.utcnow() - timedelta(hours=1)
-
+def delete_task(unresolved_url):
     query = """
-        SELECT unresolved_url
-        FROM sid_queue
-        WHERE assigned_at < %s
-        ORDER BY random()
-        LIMIT 33;
-    """
-
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, (three_hours_ago,))
-            rows = cur.fetchall()
-            if not rows:
-                return None
-            return [row['unresolved_url'] for row in rows]
-
-def unresolved_shorturl_retrieve():
-    three_hours_ago = datetime.utcnow() - timedelta(hours=1)
-
-    query = """
-        SELECT unresolved_url
-        FROM shorturl_queue
-        WHERE assigned_at < %s
-        ORDER BY random()
-        LIMIT 33;
-    """
-
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, (three_hours_ago,))
-            rows = cur.fetchall()
-            if not rows:
-                return None
-            return [row['unresolved_url'] for row in rows]
-
-def delete_bitly_task(unresolved_url):
-    query = """
-        DELETE FROM bitly_queue
+        DELETE FROM big_queue
         WHERE unresolved_url = %s;
     """
 
@@ -698,26 +629,6 @@ def delete_bitly_task(unresolved_url):
         with conn.cursor() as cur:
             cur.execute(query, (unresolved_url,))
             return cur.rowcount  # number of rows deleted
-
-def delete_sid_task(unresolved_url):
-    query = """
-        DELETE FROM sid_queue
-        WHERE unresolved_url = %s;
-    """
-
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, (unresolved_url,))
-
-def delete_shorturl_task(unresolved_url):
-    query = """
-        DELETE FROM shorturl_queue
-        WHERE unresolved_url = %s;
-    """
-
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, (unresolved_url,))
 
 
 def update_hold_worker(condition):

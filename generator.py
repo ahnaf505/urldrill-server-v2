@@ -1,7 +1,7 @@
 import itertools
 from db import *
 
-one_chunk = 33
+one_chunk = 15
 
 bitly_allowed = [
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 
@@ -36,7 +36,7 @@ shorturl_allowed = [
 
 
 def generate_bitly():
-    pending = unresolved_bitly_retrieve()
+    pending = unresolved_retrieve()
     if pending != None:
         return pending
     last_index = get_state('bitly')
@@ -55,11 +55,12 @@ def generate_bitly():
 
     current_index += len(result)
     update_state('bitly', current_index)  # Update DB once
+    result = [f"https://bit.ly/{item}" for item in result]
     return result
 
 
 def generate_sid():
-    pending = unresolved_sid_retrieve()
+    pending = unresolved_retrieve()
     if pending != None:
         return pending
     last_index = get_state('sid')
@@ -77,10 +78,11 @@ def generate_sid():
 
     current_index += len(result)
     update_state('sid', current_index)  # Update DB once
+    result = [f"https://s.id/{item}" for item in result]
     return result
 
 def generate_shorturl():
-    pending = unresolved_shorturl_retrieve()
+    pending = unresolved_retrieve()
     if pending != None:
         return pending
     last_index = get_state('shorturl')
@@ -97,6 +99,8 @@ def generate_shorturl():
        
     current_index += len(result)  # Update the index after generating all items
     update_state('shorturl', current_index)  # Update DB once
+
+    result = [f"https://shorturl.at/{item}" for item in result]
 
     return result
 
