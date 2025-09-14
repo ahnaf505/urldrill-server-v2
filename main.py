@@ -37,23 +37,6 @@ async def get_worker_auth(
         raise HTTPException(status_code=401, detail="Invalid worker credentials")
     return worker_id
 
-def count_total_items(data_dict):
-    total = 0
-    
-    # Check if it's a dictionary
-    if not isinstance(data_dict, dict):
-        return 0
-    
-    for key, value in data_dict.items():
-        if isinstance(value, (list, tuple, set)):
-            total += len(value)
-        elif isinstance(value, dict):
-            total += len(value)
-        else:
-            # Single value counts as 1
-            total += 1
-    
-    return total
 
 def format_bytes(value: int) -> str:
     """
@@ -347,10 +330,11 @@ async def get_tasks(request: Request):
 
     # These are your synchronous generators
     generated_uid = generate_bitly() + generate_sid() + generate_shorturl()
+    #generated_uid = ["https://bit.ly/a"]
 
     # Insert into queue and update DB asynchronously
     await asyncio.to_thread(batch_insert_queue, generated_uid, worker_id)
-    count = await asyncio.to_thread(count_total_items, generated_uid)
+    count = len(generated_uid)
     await asyncio.to_thread(db_add_to_queue_count, worker_id, count)
 
     return generated_uid
@@ -411,6 +395,10 @@ async def submit_result(
         return {"status": "success", "message": "Result processed successfully"}
 
     elif status == "noredirect":
+        try:
+            await asyncio.to_thread(delete_task, unresolved_url)
+        except:
+            pass
         await asyncio.to_thread(db_noredirect_result, worker_id, unresolved_url)
         return {"status": "success", "message": "Result processed successfully"}
 

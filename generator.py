@@ -1,7 +1,7 @@
 import itertools
 from db import *
 
-one_chunk = 15
+one_chunk = 35
 
 bitly_allowed = [
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 
@@ -33,6 +33,25 @@ shorturl_allowed = [
     '8', '9'
 ]
 
+tinycc_allowed = [
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 
+    'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 
+    'u', 'v', 'w', 'x', 'y', 'z', 'A', 'B', 'C', 'D', 
+    'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 
+    'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 
+    'Y', 'Z', '0', '1', '2', '3', '4', '5', '6', '7', 
+    '8', '9', '-', '_'
+]
+
+shorturlgg_allowed = [
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 
+    'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 
+    'u', 'v', 'w', 'x', 'y', 'z', 'A', 'B', 'C', 'D', 
+    'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 
+    'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 
+    'Y', 'Z', '0', '1', '2', '3', '4', '5', '6', '7', 
+    '8', '9'
+]
 
 
 def generate_bitly():
@@ -101,6 +120,52 @@ def generate_shorturl():
     update_state('shorturl', current_index)  # Update DB once
 
     result = [f"https://shorturl.at/{item}" for item in result]
+
+    return result
+
+def generate_tinycc():
+    pending = unresolved_retrieve()
+    if pending != None:
+        return pending
+    last_index = get_state('tinycc')
+    current_index = last_index
+    result = []
+
+    # For lengths from 1 to 10
+    for length in range(1, 22):
+        combinations = itertools.product(tinycc_allowed, repeat=length)
+        
+        # Slice only the block we need
+        for combo in itertools.islice(combinations, current_index, current_index + one_chunk - len(result)):
+            result.append(''.join(combo))
+       
+    current_index += len(result)  # Update the index after generating all items
+    update_state('tinycc', current_index)  # Update DB once
+
+    result = [f"https://tiny.cc/{item}" for item in result]
+
+    return result
+
+def generate_shorturlgg():
+    pending = unresolved_retrieve()
+    if pending != None:
+        return pending
+    last_index = get_state('shorturlgg')
+    current_index = last_index
+    result = []
+
+    # For lengths from 1 to 10
+    for length in range(1, 22):
+        combinations = itertools.product(shorturlgg_allowed, repeat=length)
+        
+        # Slice only the block we need
+        for combo in itertools.islice(combinations, current_index, current_index + one_chunk - len(result)):
+            result.append(''.join(combo))
+       
+    current_index += len(result)  # Update the index after generating all items
+    update_state('shorturlgg', current_index)  # Update DB once
+
+    result = [f"https://shorturl.gg/{item}" for item in result]
 
     return result
 

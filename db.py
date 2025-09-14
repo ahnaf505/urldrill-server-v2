@@ -430,7 +430,7 @@ def process_workers(raw_workers):
         diff_sec = (now - last_updated).total_seconds()
 
         # Status check (idle if >30s old)
-        status = "active" if diff_sec <= 30 else "idle"
+        status = "active" if diff_sec <= 60 else "idle"
         # RAM (assuming 16 GB total)
         ram_total = 16
         ram_percent = round(w["ram_usage"])
@@ -452,7 +452,6 @@ def process_workers(raw_workers):
             last_active = f"{int(diff_sec//3600)}h ago"
 
         # Dummy URLs processed
-
 
         worker_nodes.append({
             "id": w["worker_id"],
@@ -620,6 +619,7 @@ def unresolved_retrieve():
             return [row['unresolved_url'] for row in rows]
 
 def delete_task(unresolved_url):
+
     query = """
         DELETE FROM big_queue
         WHERE unresolved_url = %s;

@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS lastcount (
 INSERT INTO lastcount (service, last_index) VALUES ('bitly', 0);
 INSERT INTO lastcount (service, last_index) VALUES ('shorturl', 0);
 INSERT INTO lastcount (service, last_index) VALUES ('sid', 0);
+INSERT INTO lastcount (service, last_index) VALUES ('tinycc', 0);
+INSERT INTO lastcount (service, last_index) VALUES ('shorturlgg', 0);
 
 CREATE TABLE IF NOT EXISTS statistics (
     stat_type TEXT PRIMARY KEY,
