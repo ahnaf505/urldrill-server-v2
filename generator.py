@@ -1,7 +1,7 @@
 import itertools
 from db import *
 
-one_chunk = 35
+one_chunk = 60
 
 bitly_allowed = [
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 
@@ -54,11 +54,11 @@ shorturlgg_allowed = [
 ]
 
 
-def generate_bitly():
-    pending = unresolved_retrieve()
+async def generate_bitly():
+    pending = await unresolved_retrieve()
     if pending != None:
         return pending
-    last_index = get_state('bitly')
+    last_index = await get_state('bitly')
     current_index = last_index
     result = []
 
@@ -73,16 +73,16 @@ def generate_bitly():
             break
 
     current_index += len(result)
-    update_state('bitly', current_index)  # Update DB once
+    await update_state('bitly', current_index)  # Update DB once
     result = [f"https://bit.ly/{item}" for item in result]
     return result
 
 
-def generate_sid():
-    pending = unresolved_retrieve()
+async def generate_sid():
+    pending = await unresolved_retrieve()
     if pending != None:
         return pending
-    last_index = get_state('sid')
+    last_index = await get_state('sid')
     current_index = last_index
     result = []
 
@@ -96,15 +96,15 @@ def generate_sid():
             break
 
     current_index += len(result)
-    update_state('sid', current_index)  # Update DB once
+    await update_state('sid', current_index)  # Update DB once
     result = [f"https://s.id/{item}" for item in result]
     return result
 
-def generate_shorturl():
-    pending = unresolved_retrieve()
+async def generate_shorturl():
+    pending = await unresolved_retrieve()
     if pending != None:
         return pending
-    last_index = get_state('shorturl')
+    last_index = await get_state('shorturl')
     current_index = last_index
     result = []
 
@@ -117,17 +117,17 @@ def generate_shorturl():
             result.append(''.join(combo))
        
     current_index += len(result)  # Update the index after generating all items
-    update_state('shorturl', current_index)  # Update DB once
+    await update_state('shorturl', current_index)  # Update DB once
 
     result = [f"https://shorturl.at/{item}" for item in result]
 
     return result
 
-def generate_tinycc():
-    pending = unresolved_retrieve()
+async def generate_tinycc():
+    pending = await unresolved_retrieve()
     if pending != None:
         return pending
-    last_index = get_state('tinycc')
+    last_index = await get_state('tinycc')
     current_index = last_index
     result = []
 
@@ -140,17 +140,17 @@ def generate_tinycc():
             result.append(''.join(combo))
        
     current_index += len(result)  # Update the index after generating all items
-    update_state('tinycc', current_index)  # Update DB once
+    await update_state('tinycc', current_index)  # Update DB once
 
     result = [f"https://tiny.cc/{item}" for item in result]
 
     return result
 
-def generate_shorturlgg():
-    pending = unresolved_retrieve()
+async def generate_shorturlgg():
+    pending = await unresolved_retrieve()
     if pending != None:
         return pending
-    last_index = get_state('shorturlgg')
+    last_index = await get_state('shorturlgg')
     current_index = last_index
     result = []
 
@@ -163,7 +163,7 @@ def generate_shorturlgg():
             result.append(''.join(combo))
        
     current_index += len(result)  # Update the index after generating all items
-    update_state('shorturlgg', current_index)  # Update DB once
+    await update_state('shorturlgg', current_index)  # Update DB once
 
     result = [f"https://shorturl.gg/{item}" for item in result]
 

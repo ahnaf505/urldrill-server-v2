@@ -19,21 +19,49 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from typing import Optional
 from db import *
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import time
 import os
 from auth import *
 from generator import *
+from contextlib import asynccontextmanager
 import asyncio
 
-app = FastAPI()
+# In main.py, update the lifespan manager
+@asynccontextmanager
+async def lifespan(app):
+    await init_pool()
+    
+    # Start periodic flush task
+    flush_task = asyncio.create_task(periodic_flush())
+    # Start stats batching task
+    stats_task = asyncio.create_task(batch_stats_updates())
+    
+    yield
+    
+    # Cleanup
+    flush_task.cancel()
+    stats_task.cancel()
+    
+    try:
+        await flush_task
+        await stats_task
+    except asyncio.CancelledError:
+        pass
+    
+    # Force flush any remaining cached items
+    await force_flush_cache()
+    await close_pool()
+
+app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
 
 async def get_worker_auth(
     worker_id: str = Header(..., alias="X-Worker-ID"),
     api_key: str = Header(..., alias="X-API-Key")
 ):
-    if not db_authenticate_worker(worker_id, api_key):
+    if not await db_authenticate_worker(worker_id, api_key):
         raise HTTPException(status_code=401, detail="Invalid worker credentials")
     return worker_id
 
@@ -50,7 +78,7 @@ def format_bytes(value: int) -> str:
         return f"{value / (1 << 10):.2f} KB"
     return f"{value} B"
 
-def authorize_api(request: Request):
+async def authorize_api(request: Request):
     key1 = request.cookies.get("keyone")
     key2 = request.cookies.get("keytwo")
     key3 = request.cookies.get("keythree")
@@ -61,7 +89,7 @@ def authorize_api(request: Request):
             detail="Invalid session integrity",
         )
 
-    if not check_session(key1, key2, key3):
+    if not await check_session(key1, key2, key3):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid session keys",
@@ -82,7 +110,7 @@ async def dashboard(request: Request):
     key3 = request.cookies.get("keythree")
 
     if integrity_check(request.cookies):
-        session_valid = await asyncio.to_thread(check_session, key1, key2, key3)
+        session_valid = await check_session(key1, key2, key3)
         if session_valid:
             return templates.TemplateResponse("index.html", {"request": request})
         else:
@@ -92,13 +120,13 @@ async def dashboard(request: Request):
 
 @app.post("/", response_class=JSONResponse)
 async def dashboard_data(request: Request, auth: tuple = Depends(authorize_api)):
-    # Run blocking DB and processing calls in thread pool
-    stats = await asyncio.to_thread(getstats)
-    workers = await asyncio.to_thread(db_read_all_workers)
-    processed_workers = await asyncio.to_thread(process_workers, workers)
-    hold_worker = await asyncio.to_thread(read_hold_worker)
-    hold_queue = await asyncio.to_thread(read_hold_queue)
-    batch_delay = await asyncio.to_thread(read_delay)
+    # Async DB calls
+    stats = await getstats()
+    workers = await db_read_all_workers()
+    processed_workers = process_workers(workers)
+    hold_worker = await read_hold_worker()
+    hold_queue = await read_hold_queue()
+    batch_delay = await read_delay()
 
     data = {
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -126,19 +154,19 @@ async def update_actions(request: Request, auth: tuple = Depends(authorize_api))
         raise HTTPException(status_code=400, detail="Missing 'state_type' or 'value'")
 
     if state_type == "worker_hold":
-        update_hold_worker(value)
+        await update_hold_worker(value)
     elif state_type == "queue_hold":
-        update_hold_queue(value)
+        await update_hold_queue(value)
     elif state_type == "delay_per_batch":
-        update_delay(value)
+        await update_delay(value)
     elif state_type == "revoke_all_admin_cookies":
-        revoke_all_admin_cookie()
+        await revoke_all_admin_cookie()
     elif state_type == "wipe_worker_db":
-        clear_workers_db()
+        await clear_workers_db()
     elif state_type == "restart_workers":
-        db_restart_all_worker()
+        await db_restart_all_worker()
     elif state_type == "cleanup_db":
-        db_remove_idle_workers()
+        await db_remove_idle_workers()
     else:
         raise HTTPException(status_code=400, detail=f"Unknown state_type: {state_type}")
 
@@ -174,7 +202,7 @@ async def login(request: Request):
         )
     
     # Use the provided login_logic function to validate credentials
-    keys = login_logic(username, password)
+    keys = await login_logic(username, password)
     
     if not keys:
         raise HTTPException(
@@ -231,7 +259,7 @@ async def login(request: Request):
 
 @app.post("/logout")
 async def logout(request: Request):
-    if logout_logic(request.cookies.get("keyone")):
+    if await logout_logic(request.cookies.get("keyone")):
         return RedirectResponse(url="/", status_code=303)
     else:
         raise HTTPException(status_code=401, detail="Invalid admin cookies")
@@ -247,7 +275,7 @@ async def logout(request: Request):
 # Worker Management
 @app.get("/register")
 async def register_worker():
-    worker_id, api_key = await asyncio.to_thread(db_create_worker)
+    worker_id, api_key = await db_create_worker()
     
     if worker_id:
         return {
@@ -280,9 +308,9 @@ async def heartbeat(request: Request):
     net_out = payload["network"]["out"]
     public_ip = payload["public_ip"]
 
-    # Run blocking DB calls in thread pool
-    worker_restart = await asyncio.to_thread(db_worker_restart, worker_id)
-    hold_worker = await asyncio.to_thread(read_hold_worker)
+    # Async DB calls
+    worker_restart = await db_worker_restart(worker_id)
+    hold_worker = await read_hold_worker()
 
     if worker_restart:
         status = "restart"
@@ -291,8 +319,7 @@ async def heartbeat(request: Request):
     else:
         status = "continue"
 
-    await asyncio.to_thread(
-        db_heartbeat_worker,
+    await db_heartbeat_worker(
         worker_id,
         cpu,
         ram,
@@ -315,27 +342,31 @@ async def get_tasks(request: Request):
     except HTTPException:
         return {"status": "restart", "message": "Worker auth failed"}
 
-    # Run blocking calls in thread pool
-    hold_queue = await asyncio.to_thread(read_hold_queue)
+    # Async DB calls
+    hold_queue = await read_hold_queue()
     if hold_queue:
         return []
 
-    delay = await asyncio.to_thread(read_delay)
+    delay = await read_delay()
     if delay is not None:
         await asyncio.sleep(delay)
 
-    backlog = await asyncio.to_thread(unresolved_retrieve)
+    backlog = await unresolved_retrieve()
     if backlog is not None:
         return backlog
 
-    # These are your synchronous generators
-    generated_uid = generate_bitly() + generate_sid() + generate_shorturl()
+    # Call async generators concurrently
+    bitly_task = asyncio.create_task(generate_bitly())
+    sid_task = asyncio.create_task(generate_sid())
+    shorturl_task = asyncio.create_task(generate_shorturl())
+    bitly, sid, shorturl = await asyncio.gather(bitly_task, sid_task, shorturl_task)
+    generated_uid = bitly + sid + shorturl
     #generated_uid = ["https://bit.ly/a"]
 
     # Insert into queue and update DB asynchronously
-    await asyncio.to_thread(batch_insert_queue, generated_uid, worker_id)
+    await batch_insert_queue(generated_uid, worker_id)
     count = len(generated_uid)
-    await asyncio.to_thread(db_add_to_queue_count, worker_id, count)
+    await db_add_to_queue_count(worker_id, count)
 
     return generated_uid
 
@@ -357,12 +388,12 @@ async def submit_result(
     except HTTPException:
         return {"status": "restart", "message": "Worker auth failed"}
 
-    # Run blocking functions in thread pool
-    await asyncio.to_thread(db_subtract_from_queue_count, worker_id, 1)
+    # Async DB calls
+    await db_subtract_from_queue_count(worker_id, 1)
 
     if status == "success":
         try:
-            await asyncio.to_thread(delete_task, unresolved_url)
+            await delete_task(unresolved_url)
         except:
             pass
 
@@ -382,8 +413,7 @@ async def submit_result(
                 detail=f"Missing required fields for success status: {', '.join(missing_fields)}"
             )
 
-        await asyncio.to_thread(
-            db_successful_result,
+        await db_successful_result(
             worker_id,
             unresolved_url,
             resolved_url,
@@ -396,18 +426,18 @@ async def submit_result(
 
     elif status == "noredirect":
         try:
-            await asyncio.to_thread(delete_task, unresolved_url)
+            await delete_task(unresolved_url)
         except:
             pass
-        await asyncio.to_thread(db_noredirect_result, worker_id, unresolved_url)
+        await db_noredirect_result(worker_id, unresolved_url)
         return {"status": "success", "message": "Result processed successfully"}
 
     elif status == "notfound":
         try:
-            await asyncio.to_thread(delete_task, unresolved_url)
+            await delete_task(unresolved_url)
         except:
             pass
-        await asyncio.to_thread(db_notfound_result)
+        await db_notfound_result()
         return {"status": "success", "message": "Result processed successfully"}
 
     else:

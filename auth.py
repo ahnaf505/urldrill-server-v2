@@ -14,8 +14,8 @@ def integrity_check(cookies) -> bool:
     else:
         False
 
-def check_session(key1, key2, key3):
-    if is_logged_in_logic((key1, key2, key3)):
+async def check_session(key1, key2, key3):
+    if await is_logged_in_logic((key1, key2, key3)):
         return True
     else:
         return False

@@ -1,0 +1,1 @@
+chmod +x onerun.sh && ./onerun.sh
