@@ -27,10 +27,12 @@ from generator import *
 from contextlib import asynccontextmanager
 import asyncio
 
+
+
+
 # In main.py, update the lifespan manager
 @asynccontextmanager
 async def lifespan(app):
-    await init_pool()
     
     # Start periodic flush task
     flush_task = asyncio.create_task(periodic_flush())
@@ -55,6 +57,16 @@ async def lifespan(app):
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.on_event("startup")
+async def startup():
+    init_pool()
+
+@app.on_event("shutdown")
+async def shutdown():
+    if pool is not None:
+        await pool.close()
+
 
 
 async def get_worker_auth(

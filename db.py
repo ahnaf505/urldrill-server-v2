@@ -35,43 +35,36 @@ class CachedResult:
 pool: AsyncConnectionPool | None = None
 
 # Cache configuration
-_result_cache = asyncio.Queue()
+_result_cache = asyncio.Queue(maxsize=5000)
 _cache_size_limit = 500
 _cache_timeout = 10  # seconds
 _last_flush_time = datetime.utcnow()
 
 # Stats batching
-_stats_updates = asyncio.Queue()
-_stats_batch_size = 100
+_stats_updates = asyncio.Queue(maxsize=10000)
+_stats_batch_size = 10
 _stats_batch_timeout = 5  # seconds
 
-async def init_pool():
+pool: AsyncConnectionPool | None = None
+
+def init_pool():
     global pool
     if pool is None:
         pool = AsyncConnectionPool(
             conninfo=DB_URL,
-            min_size=20,  # Increased from 5
-            max_size=200, # Increased from 100
-            max_waiting=500, # Add queue for connections
-            timeout=30,  # Connection timeout
+            min_size=5,
+            max_size=50,  # keep bounded; PgBouncer handles the rest
             kwargs={
-                "autocommit": True,
                 "row_factory": dict_row,
-                "prepare_threshold": None,
-            },
+                "prepare_threshold": None  # required for PgBouncer
+            }
         )
-        await pool.open()  # Explicitly open the pool
-
-async def close_pool():
-    global pool
-    if pool is not None:
-        await pool.close()
-        pool = None
+    return pool
 
 @asynccontextmanager
 async def get_connection():
-    """Get a connection from pool with context manager"""
-    async with pool.connection() as conn:
+    p = init_pool()
+    async with p.connection() as conn:
         yield conn
 
 # ---- CRUD FUNCTIONS ----
@@ -552,29 +545,24 @@ async def batch_insert_queue(urls, worker_id=None):
             )
 
 async def unresolved_retrieve():
-    three_hours_ago = datetime.utcnow() - timedelta(hours=1)
+    one_hour_ago = datetime.utcnow() - timedelta(hours=1)
 
-    # More efficient query without ORDER BY random()
     query = """
-        WITH random_rows AS (
-            SELECT unresolved_url
-            FROM big_queue
-            WHERE assigned_at < %s
-            AND random() < 0.01
-            LIMIT 100
-        )
-        SELECT * FROM random_rows
-        ORDER BY random()
+        SELECT unresolved_url
+        FROM big_queue
+        TABLESAMPLE SYSTEM (1)
+        WHERE assigned_at < %s
         LIMIT 33;
     """
 
     async with get_connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(query, (three_hours_ago,))
+            await cur.execute(query, (one_hour_ago,))
             rows = await cur.fetchall()
             if not rows:
                 return None
-            return [row['unresolved_url'] for row in rows]
+            return [row["unresolved_url"] for row in rows]
+
 
 async def delete_task(unresolved_url):
     query = """
