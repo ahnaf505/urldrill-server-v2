@@ -25,7 +25,7 @@ def init_pool():
         pool = AsyncConnectionPool(
             conninfo=DB_URL,
             min_size=5,
-            max_size=50,  # keep bounded; PgBouncer handles the rest
+            max_size=200,
             kwargs={
                 "row_factory": dict_row,
                 "prepare_threshold": None  # required for PgBouncer

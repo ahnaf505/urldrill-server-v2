@@ -41,7 +41,9 @@ async def startup():
     init_pool()
 
     # Start background workers
-    app.state.workers = [asyncio.create_task(queue_worker()) for _ in range(1)]
+    global _refresh_task
+    _refresh_task = [asyncio.create_task(queue_worker()) for _ in range(1)]
+    app.state.refresh_task = asyncio.create_task(refresh_workers())
 
 
 @app.on_event("shutdown")
@@ -51,19 +53,20 @@ async def shutdown():
         await queue.put(None)  # poison pill for each worker
     await queue.join()
     await asyncio.gather(*app.state.workers, return_exceptions=True)
-
+    _stop_event.set()
+    if _refresh_task:
+        await _refresh_task
     # Close DB pool
     if pool is not None:
         await pool.close()
 
 async def get_worker_auth(
     worker_id: str = Header(..., alias="X-Worker-ID"),
-    api_key: str = Header(..., alias="X-API-Key")
+    api_key: str = Header(..., alias="X-API-Key"),
 ):
-    if not await db_authenticate_worker(worker_id, api_key):
+    if WORKERS.get(worker_id) != api_key:
         raise HTTPException(status_code=401, detail="Invalid worker credentials")
     return worker_id
-
 
 def format_bytes(value: int) -> str:
     """
@@ -277,6 +280,7 @@ async def register_worker():
     worker_id, api_key = await db_create_worker()
     
     if worker_id:
+        WORKERS[worker_id] = api_key
         return {
             "worker_id": worker_id,
             "api_key": api_key

@@ -2,7 +2,10 @@ import asyncio
 from collections import defaultdict
 from db import *
 
-queue = asyncio.Queue()
+queue = asyncio.Queue(maxsize=500)
+WORKERS: dict[str, str] = {}
+_refresh_task: asyncio.Task | None = None
+_stop_event = asyncio.Event()
 
 # ---- Producer ----
 async def queue_subtract_job(worker_id, count):
@@ -34,6 +37,16 @@ async def queue_notfound_result():
     await queue.put(("notfound", 1))
 
 
+async def refresh_workers():
+    global WORKERS_CACHE
+    while True:
+        try:
+            rows = await db_read_all_workers()
+            WORKERS_CACHE = {w["worker_id"]: w["api_key"] for w in rows}
+            print(f"[Workers Refresh] Loaded {len(WORKERS_CACHE)} workers into cache")
+        except Exception as e:
+            print(f"[Workers Refresh] Failed: {e}")
+        await asyncio.sleep(20)  # refresh every 20s
 # ---- Consumer ----
 async def queue_worker():
     while True:
