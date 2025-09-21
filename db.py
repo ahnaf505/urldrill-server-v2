@@ -9,42 +9,14 @@ from dotenv import load_dotenv
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-import asyncio
-import time
 from typing import List, Dict, Any
-from dataclasses import dataclass
 from contextlib import asynccontextmanager
-
 
 # Connection string (replace with yours as needed)
 load_dotenv()
-
 DB_URL = os.getenv("DB_URL")
 
-@dataclass
-class CachedResult:
-    worker_id: str
-    unresolved_url: str
-    resolved_url: str
-    title: str
-    short_description: str
-    full_text_blob: str
-    scraped_at: datetime
-
 # Async connection pool
-pool: AsyncConnectionPool | None = None
-
-# Cache configuration
-_result_cache = asyncio.Queue(maxsize=5000)
-_cache_size_limit = 500
-_cache_timeout = 10  # seconds
-_last_flush_time = datetime.utcnow()
-
-# Stats batching
-_stats_updates = asyncio.Queue(maxsize=10000)
-_stats_batch_size = 10
-_stats_batch_timeout = 5  # seconds
-
 pool: AsyncConnectionPool | None = None
 
 def init_pool():
@@ -197,7 +169,7 @@ async def db_read_all_workers():
                 })
             return workers
 
-# Queue Counter with batching
+# Queue Counter
 async def db_add_to_queue_count(worker_id, amount):
     async with get_connection() as conn:
         async with conn.cursor() as cur:
@@ -213,9 +185,15 @@ async def db_add_to_queue_count(worker_id, amount):
                 (amount, worker_id,)
             )
             
-            # Use batching for statistics
-            await _stats_updates.put(('queue_size', amount))
-            await _stats_updates.put(('total_url', amount))
+            # Update statistics directly
+            await cur.execute(
+                "UPDATE statistics SET count = count + %s WHERE stat_type = 'queue_size'",
+                (amount,)
+            )
+            await cur.execute(
+                "UPDATE statistics SET count = count + %s WHERE stat_type = 'total_url'",
+                (amount,)
+            )
 
             return True
 
@@ -238,36 +216,106 @@ async def db_subtract_from_queue_count(worker_id, amount):
                 (amount, worker_id)
             )
             
-            # Use batching for statistics
-            await _stats_updates.put(('queue_size', -amount))
+            # Update statistics directly
+            await cur.execute(
+                "UPDATE statistics SET count = count - %s WHERE stat_type = 'queue_size'",
+                (amount,)
+            )
 
             return True
 
-async def db_notfound_result():
-    # Use batching for statistics
-    await _stats_updates.put(('url_not_found', 1))
+async def db_notfound_results(count: int):
+    """
+    Batch update 'not found' results in statistics.
+    count: number of notfound events to add
+    """
+    if count <= 0:
+        return 0
 
-# Scraping Result Handling
-async def db_noredirect_result(worker_id, unresolved_url):
     async with get_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
-                INSERT INTO noredirect (
-                    worker_id, 
-                    unresolved_url, 
-                    scraped_at
-                )
-                VALUES (%s, %s, %s);
-                """,
-                (
-                    worker_id,
-                    unresolved_url,
-                    datetime.utcnow()
-                )
+                "UPDATE statistics SET count = count + %s WHERE stat_type = 'url_not_found'",
+                (count,)
             )
-            # Use batching for statistics
-            await _stats_updates.put(('redirect_failed', 1))
+    return count
+
+
+# Scraping Result Handling
+async def db_noredirect_results(rows: list[tuple[str, str]]):
+    """
+    Insert multiple 'no redirect' results in one batch.
+    rows: list of (worker_id, unresolved_url)
+    """
+    if not rows:
+        return 0
+
+    now = datetime.utcnow()
+    values = [(worker_id, unresolved_url, now) for (worker_id, unresolved_url) in rows]
+
+    placeholders = ", ".join(["(%s, %s, %s)"] * len(values))
+
+    query = f"""
+        INSERT INTO noredirect (
+            worker_id,
+            unresolved_url,
+            scraped_at
+        )
+        VALUES {placeholders};
+    """
+
+    flat_values = [item for row in values for item in row]
+
+    async with get_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(query, flat_values)
+            await cur.execute(
+                "UPDATE statistics SET count = count + %s WHERE stat_type = 'redirect_failed'",
+                (len(rows),)
+            )
+
+    return len(rows)
+
+
+async def db_successful_results(rows: list[tuple]):
+    """
+    rows: list of tuples like
+        (worker_id, unresolved_url, resolved_url, title, short_description, full_text_blob)
+    """
+
+    if not rows:
+        return 0
+
+    now = datetime.utcnow()
+    values = [
+        (worker_id, unresolved_url, resolved_url, title, short_description, full_text_blob, now)
+        for (worker_id, unresolved_url, resolved_url, title, short_description, full_text_blob) in rows
+    ]
+
+    placeholders = ", ".join(["(%s, %s, %s, %s, %s, %s, %s)"] * len(values))
+
+    query = f"""
+        INSERT INTO scraped_pages (
+            worker_id,
+            unresolved_url,
+            resolved_url,
+            title,
+            short_description,
+            full_text_blob,
+            scraped_at
+        )
+        VALUES {placeholders}
+    """
+
+    flat_values = [item for row in values for item in row]
+
+    async with get_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(query, flat_values)
+            await cur.execute(
+                "UPDATE statistics SET count = count + %s WHERE stat_type = 'scraped_pages'",
+                (len(values),)
+            )
 
 async def update_state(service_name, last_index):
     async with get_connection() as conn:
@@ -563,17 +611,21 @@ async def unresolved_retrieve():
                 return None
             return [row["unresolved_url"] for row in rows]
 
+async def db_delete_tasks(unresolved_urls):
+    if not unresolved_urls:
+        return 0  # nothing to delete
 
-async def delete_task(unresolved_url):
-    query = """
+    placeholders = ", ".join(["%s"] * len(unresolved_urls))
+    query = f"""
         DELETE FROM big_queue
-        WHERE unresolved_url = %s;
+        WHERE unresolved_url IN ({placeholders});
     """
 
     async with get_connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(query, (unresolved_url,))
-            return cur.rowcount  # number of rows deleted
+            await cur.execute(query, unresolved_urls)
+            return cur.rowcount
+
 
 async def update_hold_worker(condition):
     query = """
@@ -665,135 +717,3 @@ async def clear_workers_db():
     async with get_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(query)
-
-# Cache and batching functions
-async def _flush_result_cache():
-    """Flush cached results to database"""
-    global _last_flush_time
-    
-    # Collect all items from queue
-    items = []
-    while not _result_cache.empty():
-        try:
-            items.append(_result_cache.get_nowait())
-        except asyncio.QueueEmpty:
-            break
-    
-    if not items:
-        return
-    
-    _last_flush_time = datetime.utcnow()
-    
-    # Batch insert to database
-    if items:
-        async with get_connection() as conn:
-            async with conn.cursor() as cur:
-                # Prepare values for batch insert
-                values = []
-                for result in items:
-                    values.append((
-                        result.worker_id,
-                        result.unresolved_url,
-                        result.resolved_url,
-                        result.title,
-                        result.short_description,
-                        result.full_text_blob,
-                        result.scraped_at
-                    ))
-                
-                # Batch insert
-                await cur.executemany(
-                    """
-                    INSERT INTO scraped_pages (
-                        worker_id, 
-                        unresolved_url, 
-                        resolved_url, 
-                        title, 
-                        short_description, 
-                        full_text_blob, 
-                        scraped_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    values
-                )
-                
-                # Update statistics
-                count = len(items)
-                await _stats_updates.put(('scraped_pages', count))
-
-async def cache_successful_result(worker_id, unresolved_url, resolved_url, title, short_description, full_text_blob):
-    """Cache a successful result for batch processing"""
-    result = CachedResult(
-        worker_id=worker_id,
-        unresolved_url=unresolved_url,
-        resolved_url=resolved_url,
-        title=title,
-        short_description=short_description,
-        full_text_blob=full_text_blob,
-        scraped_at=datetime.utcnow()
-    )
-    
-    try:
-        _result_cache.put_nowait(result)
-    except asyncio.QueueFull:
-        # If queue is full, force flush
-        asyncio.create_task(_flush_result_cache())
-        _result_cache.put_nowait(result)
-    
-    # Check if we need to flush based on size
-    if _result_cache.qsize() >= _cache_size_limit:
-        asyncio.create_task(_flush_result_cache())
-
-async def force_flush_cache():
-    """Force flush any remaining cached results"""
-    await _flush_result_cache()
-
-async def db_successful_result(worker_id, unresolved_url, resolved_url, title, short_description, full_text_blob):
-    """Use cached version instead of direct DB insert"""
-    await cache_successful_result(worker_id, unresolved_url, resolved_url, title, short_description, full_text_blob)
-
-async def _flush_stats_batch(batch):
-    """Flush a batch of statistics updates"""
-    # Group updates by stat_type
-    updates_by_type = {}
-    for stat_type, amount in batch:
-        updates_by_type[stat_type] = updates_by_type.get(stat_type, 0) + amount
-    
-    # Execute batch update
-    async with get_connection() as conn:
-        async with conn.cursor() as cur:
-            for stat_type, amount in updates_by_type.items():
-                await cur.execute(
-                    "UPDATE statistics SET count = count + %s WHERE stat_type = %s",
-                    (amount, stat_type)
-                )
-
-async def batch_stats_updates():
-    """Batch process statistics updates"""
-    batch = []
-    last_flush = time.time()
-    
-    while True:
-        try:
-            # Wait for update with timeout
-            update = await asyncio.wait_for(_stats_updates.get(), timeout=_stats_batch_timeout)
-            batch.append(update)
-            
-            # Flush if batch size reached or timeout
-            if len(batch) >= _stats_batch_size or (time.time() - last_flush) >= _stats_batch_timeout:
-                await _flush_stats_batch(batch)
-                batch = []
-                last_flush = time.time()
-                
-        except asyncio.TimeoutError:
-            if batch:
-                await _flush_stats_batch(batch)
-                batch = []
-                last_flush = time.time()
-
-async def periodic_flush():
-    """Periodically flush cache to ensure no data loss"""
-    while True:
-        await asyncio.sleep(5)  # Check every 5 seconds
-        await force_flush_cache()

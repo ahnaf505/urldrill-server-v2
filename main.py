@@ -24,50 +24,37 @@ import time
 import os
 from auth import *
 from generator import *
+from queueing import *
 from contextlib import asynccontextmanager
 import asyncio
 
 
 
 
-# In main.py, update the lifespan manager
-@asynccontextmanager
-async def lifespan(app):
-    
-    # Start periodic flush task
-    flush_task = asyncio.create_task(periodic_flush())
-    # Start stats batching task
-    stats_task = asyncio.create_task(batch_stats_updates())
-    
-    yield
-    
-    # Cleanup
-    flush_task.cancel()
-    stats_task.cancel()
-    
-    try:
-        await flush_task
-        await stats_task
-    except asyncio.CancelledError:
-        pass
-    
-    # Force flush any remaining cached items
-    await force_flush_cache()
-    await close_pool()
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.on_event("startup")
 async def startup():
+    # Init DB pool first
     init_pool()
+
+    # Start background workers
+    app.state.workers = [asyncio.create_task(queue_worker()) for _ in range(1)]
+
 
 @app.on_event("shutdown")
 async def shutdown():
+    # Gracefully stop workers
+    for _ in app.state.workers:
+        await queue.put(None)  # poison pill for each worker
+    await queue.join()
+    await asyncio.gather(*app.state.workers, return_exceptions=True)
+
+    # Close DB pool
     if pool is not None:
         await pool.close()
-
-
 
 async def get_worker_auth(
     worker_id: str = Header(..., alias="X-Worker-ID"),
@@ -401,11 +388,11 @@ async def submit_result(
         return {"status": "restart", "message": "Worker auth failed"}
 
     # Async DB calls
-    await db_subtract_from_queue_count(worker_id, 1)
+    await queue_subtract_job(worker_id, 1)
 
     if status == "success":
         try:
-            await delete_task(unresolved_url)
+            await queue_delete_job(unresolved_url)
         except:
             pass
 
@@ -425,7 +412,7 @@ async def submit_result(
                 detail=f"Missing required fields for success status: {', '.join(missing_fields)}"
             )
 
-        await db_successful_result(
+        await queue_successful_result(
             worker_id,
             unresolved_url,
             resolved_url,
@@ -438,18 +425,18 @@ async def submit_result(
 
     elif status == "noredirect":
         try:
-            await delete_task(unresolved_url)
+            await queue_delete_job(unresolved_url)
         except:
             pass
-        await db_noredirect_result(worker_id, unresolved_url)
+        await queue_noredirect_result(worker_id, unresolved_url)
         return {"status": "success", "message": "Result processed successfully"}
 
     elif status == "notfound":
         try:
-            await delete_task(unresolved_url)
+            await queue_delete_job(unresolved_url)
         except:
             pass
-        await db_notfound_result()
+        await queue_notfound_result()
         return {"status": "success", "message": "Result processed successfully"}
 
     else:
