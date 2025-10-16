@@ -384,10 +384,7 @@ async def submit_result(
     full_text_blob: Optional[str] = Form(None)
 ):
     try:
-        worker_id = await get_worker_auth(
-            worker_id=request.headers.get("X-Worker-ID"),
-            api_key=request.headers.get("X-API-Key")
-        )
+        worker_id=request.headers.get("X-Worker-ID")
     except HTTPException:
         return {"status": "restart", "message": "Worker auth failed"}
 
